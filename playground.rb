@@ -1,4 +1,9 @@
-Bundler.require
+require 'bundler/inline'
+
+gemfile do
+  gem 'activerecord'
+  gem 'sqlite3'
+end
 
 require 'active_record'
 require 'minitest/autorun'
@@ -53,7 +58,7 @@ describe 'having query as arel' do
   it 'sql' do
     sql = <<-_
       SELECT p.name, avg(s.points) as average
-      FROM players p INNER JOIN statistics s 
+      FROM players p INNER JOIN statistics s
         ON p.id = s.player_id INNER JOIN participants pa
         ON s.participant_id = pa.id
       WHERE pa.homeaway="H"
