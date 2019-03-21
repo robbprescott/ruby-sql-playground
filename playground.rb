@@ -1,91 +1,151 @@
-require 'bundler/inline'
+require "bundler/inline"
 
 gemfile do
-  gem 'activerecord'
-  gem 'sqlite3'
+  source "https://rubygems.org"
+  gem "activerecord"
+  gem "pg"
+  gem "byebug"
 end
 
-require 'active_record'
-require 'minitest/autorun'
+require "active_record"
+require "minitest/autorun"
 
-ActiveRecord::Base.establish_connection :adapter => 'sqlite3', :database => ':memory:'
+`dropdb playground; createdb playground`
 
-class Player < ActiveRecord::Base
-  has_many :statistics
+ActiveRecord::Base.establish_connection(
+  adapter: "postgresql",
+  database: "playground",
+  host: "localhost",
+  username: "postgres")
+
+class Slide < ActiveRecord::Base
+  has_many :decks, -> { where(head_type: self.class.to_s) }, class_name: "Edge", foreign_key: "tail_id"
 
   connection.create_table table_name, :force => true do |t|
     t.string :name
   end
 end
 
-class Statistic < ActiveRecord::Base
-  belongs_to :player
-  belongs_to :participant
+class Deck < ActiveRecord::Base
+  has_many :children, -> { order(:sequence) }, class_name: "Edge", foreign_key: "head_id"
+  has_many :parents, class_name: "Edge", foreign_key: "tail_id"
+
+  def self.tree_sql_for(instance)
+    tree_sql = <<-SQL
+      WITH RECURSIVE search_tree(id, tail_id, tail_type, slide_ids) AS (
+        SELECT id, tail_id, tail_type,
+          CASE
+            WHEN tail_type = 'Slide' THEN ARRAY[tail_id]
+            ELSE ARRAY[]::integer[]
+          END
+        FROM edges
+        WHERE head_id = #{instance.id}
+          AND head_type = 'Deck'
+        UNION ALL
+        SELECT edges.id, edges.tail_id, edges.tail_type,
+          CASE
+            WHEN edges.tail_type = 'Slide' THEN slide_ids || edges.tail_id
+            ELSE slide_ids
+          END
+        FROM search_tree
+        JOIN edges ON edges.head_id = search_tree.tail_id
+        WHERE search_tree.tail_type = 'Deck'
+      )
+      SELECT UNNEST(slide_ids) FROM search_tree
+    SQL
+  end
+
+  def add_child(obj)
+    Edge.create(head: self, tail: obj)
+  end
+
+  def slides
+    subtree = self.class.tree_sql_for(self)
+    Slide.where("id IN (#{subtree})")
+  end
 
   connection.create_table table_name, :force => true do |t|
-    t.integer :player_id
-    t.integer :participant_id
-    t.integer :points
-    t.integer :time_played
+    t.string :name
   end
 end
 
-class Participant < ActiveRecord::Base
-  has_one :statistic
+class Edge < ActiveRecord::Base
+  belongs_to :tail, polymorphic: true
+  belongs_to :head, polymorphic: true
+  has_one :sequence
 
   connection.create_table table_name, :force => true do |t|
-    t.string :homeaway
+    t.string :tail_type
+    t.integer :tail_id
+    t.string :head_type
+    t.integer :head_id
+    t.integer :sequence
   end
 end
 
-describe 'having query as arel' do
+describe "connecting a deck to it's slides" do
   before do
-    [Statistic, Participant, Player].each { |ar| ar.delete_all }
+    [Slide, Deck, Edge].each { |ar| ar.delete_all }
 
     ActiveRecord::Base.logger = nil
 
-    player = Player.create!(name: 'Hank Manning')
+    @slide1 = Slide.create(name: "slide 1")
+    @slide2 = Slide.create(name: "slide 2")
+    @slide3 = Slide.create(name: "slide 3")
+    @slide4 = Slide.create(name: "slide 4")
+    @slide5 = Slide.create(name: "slide 5")
+    @slide6 = Slide.create(name: "slide 6")
 
-    part_a = Participant.create!(homeaway: 'H')
-    part_b = Participant.create!(homeaway: 'H')
+    @deck1 = Deck.create(name: "deck 1")
+    @deck2 = Deck.create(name: "deck 2")
+    @deck3 = Deck.create(name: "deck 3")
+    @deck4 = Deck.create(name: "deck 4")
 
-    @statistic = Statistic.create!(points: 10, time_played: 999, player: player, participant: part_a)
-    @statistic = Statistic.create!(points: 14, time_played: 999, player: player, participant: part_b)
-
-    ActiveRecord::Base.logger = Logger.new(STDOUT)
+    # ActiveRecord::Base.logger = Logger.new(STDOUT)
   end
 
-  it 'sql' do
-    sql = <<-_
-      SELECT p.name, avg(s.points) as average
-      FROM players p INNER JOIN statistics s
-        ON p.id = s.player_id INNER JOIN participants pa
-        ON s.participant_id = pa.id
-      WHERE pa.homeaway="H"
-      GROUP BY p.name
-      HAVING avg(s.time_played) > 900
-      ORDER BY average DESC
-    _
-    result = Player.connection.execute(sql)
-    result.length.must_equal 1
-    row = result.first
-    p row
-    row['name'].must_equal 'Hank Manning'
-    row['average'].must_equal 12
+  it "a deck can just have slides" do
+    # Deck 1 = slide1 - slide6
+    @deck1.add_child(@slide1)
+    @deck1.add_child(@slide2)
+    @deck1.add_child(@slide3)
+    @deck1.add_child(@slide4)
+    @deck1.add_child(@slide5)
+    @deck1.add_child(@slide6)
+
+    assert_equal 6, @deck1.children.count
+    assert_equal 6, @deck1.slides.count
   end
 
-  it 'arel' do
-    result = Player.select('name, avg(points) as average')
-               .joins(statistics: [:participant])
-               .where(participants: {homeaway: 'H'})
-               .group('players.name')
-               .having('avg(statistics.time_played) > ?', 900)
-               .order('average DESC') # .order(average: :desc) won't work
+  it "a deck can have decks and slides" do
+    # Deck 1 = slide1 - slide2
+    @deck1.add_child(@slide1)
+    @deck1.add_child(@slide2)
+    # Deck 2 = slide3 - slide4
+    @deck2.add_child(@slide3)
+    @deck2.add_child(@slide4)
+    # Deck 3 = slide5 - slide6
+    @deck3.add_child(@slide5)
+    @deck3.add_child(@slide6)
+    # Deck 4 = deck1 - deck3
+    @deck4.add_child(@deck1)
+    @deck4.add_child(@deck2)
+    @deck4.add_child(@deck3)
 
-    result.length.must_equal 1
-    row = result.first
-    p row
-    row.name.must_equal 'Hank Manning'
-    row.average.must_equal 12
+    assert_equal 3, @deck4.children.count
+    assert_equal 6, @deck4.slides.count
+  end
+
+  it "works with a bunch of super nested decks and slides" do
+    @deck1.add_child(@deck2)
+    @deck2.add_child(@deck3)
+    @deck3.add_child(@deck4)
+    @deck4.add_child(@slide1)
+    @deck4.add_child(@slide2)
+
+    assert_equal 2, @deck1.slides.count
+    assert_equal 2, @deck2.slides.count
+    assert_equal 2, @deck3.slides.count
+    assert_equal 2, @deck4.slides.count
   end
 end
