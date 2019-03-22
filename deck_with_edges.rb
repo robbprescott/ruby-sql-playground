@@ -30,10 +30,10 @@ class Deck < ActiveRecord::Base
   has_many :children, -> { order(:sequence) }, class_name: "Edge", foreign_key: "head_id"
   has_many :parents, class_name: "Edge", foreign_key: "tail_id"
 
-  def self.tree_sql_for(instance)
+  def self.find_all_children_slides_sql(instance)
     tree_sql = <<-SQL
-      WITH RECURSIVE search_tree(id, tail_id, tail_type, slide_ids) AS (
-        SELECT id, tail_id, tail_type,
+      WITH RECURSIVE search_tree(tail_id, tail_type, slide_ids) AS (
+        SELECT tail_id, tail_type,
           CASE
             WHEN tail_type = 'Slide' THEN ARRAY[tail_id]
             ELSE ARRAY[]::integer[]
@@ -42,7 +42,7 @@ class Deck < ActiveRecord::Base
         WHERE head_id = #{instance.id}
           AND head_type = 'Deck'
         UNION ALL
-        SELECT edges.id, edges.tail_id, edges.tail_type,
+        SELECT edges.tail_id, edges.tail_type,
           CASE
             WHEN edges.tail_type = 'Slide' THEN slide_ids || edges.tail_id
             ELSE slide_ids
@@ -59,8 +59,8 @@ class Deck < ActiveRecord::Base
     Edge.create(head: self, tail: obj)
   end
 
-  def slides
-    subtree = self.class.tree_sql_for(self)
+  def all_slides
+    subtree = self.class.find_all_children_slides_sql(self)
     Slide.where("id IN (#{subtree})")
   end
 
@@ -114,7 +114,7 @@ describe "connecting a deck to it's slides" do
     @deck1.add_child(@slide6)
 
     assert_equal 6, @deck1.children.count
-    assert_equal 6, @deck1.slides.count
+    assert_equal 6, @deck1.all_slides.count
   end
 
   it "a deck can have decks and slides" do
@@ -133,7 +133,7 @@ describe "connecting a deck to it's slides" do
     @deck4.add_child(@deck3)
 
     assert_equal 3, @deck4.children.count
-    assert_equal 6, @deck4.slides.count
+    assert_equal 6, @deck4.all_slides.count
   end
 
   it "works with a bunch of super nested decks and slides" do
@@ -143,9 +143,9 @@ describe "connecting a deck to it's slides" do
     @deck4.add_child(@slide1)
     @deck4.add_child(@slide2)
 
-    assert_equal 2, @deck1.slides.count
-    assert_equal 2, @deck2.slides.count
-    assert_equal 2, @deck3.slides.count
-    assert_equal 2, @deck4.slides.count
+    assert_equal 2, @deck1.all_slides.count
+    assert_equal 2, @deck2.all_slides.count
+    assert_equal 2, @deck3.all_slides.count
+    assert_equal 2, @deck4.all_slides.count
   end
 end
