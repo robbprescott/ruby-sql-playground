@@ -30,6 +30,7 @@ class Deck < ActiveRecord::Base
   has_many :children, -> { order(:sequence) }, class_name: "Edge", foreign_key: "head_id"
   has_many :parents, class_name: "Edge", foreign_key: "tail_id"
 
+  # Adapted from https://hashrocket.com/blog/posts/recursive-sql-in-activerecord
   def self.find_all_children_slides_sql(instance)
     tree_sql = <<-SQL
       WITH RECURSIVE search_tree(tail_id, tail_type, slide_ids) AS (
